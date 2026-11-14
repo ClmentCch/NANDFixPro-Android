@@ -15,6 +15,14 @@ import java.io.IOException
  * CBW → data phase → CSW, with READ(10)/READ(16) as the only data-producing
  * commands. There is deliberately no WRITE command anywhere in this class: the
  * physical medium cannot be modified by the app.
+ *
+ * Real devices are not perfectly standards-compliant. This implementation:
+ *  - sends INQUIRY before TEST UNIT READY (some bridges only answer after it);
+ *  - retries TEST UNIT READY while the medium reports NOT READY / UNIT ATTENTION;
+ *  - accepts a short INQUIRY / READ CAPACITY(16) response, which is legal;
+ *  - performs the Bulk-Only Mass Storage Reset + endpoint halt clearing after a
+ *    transport error and retries the command once;
+ *  - never treats a short READ as success, so a truncated dump cannot be saved.
  */
 class MassStorageSession(
     private val connection: UsbDeviceConnection,
@@ -22,13 +30,14 @@ class MassStorageSession(
     private val bulkIn: UsbEndpoint,
     private val bulkOut: UsbEndpoint,
     private val lun: Int = 0,
-    private val timeoutMs: Int = 5_000,
+    private val timeoutMs: Int = 10_000,
     private val logger: (String) -> Unit = {},
 ) : RandomAccessSource {
 
     private data class CommandOutcome(
         val success: Boolean,
         val data: ByteArray,
+        val received: Int,
         val csw: ScsiProtocol.Csw?,
         val error: String?,
         val sense: ScsiProtocol.Sense? = null,
@@ -43,6 +52,9 @@ class MassStorageSession(
     var capacity: ScsiProtocol.Capacity? = null
         private set
 
+    var maxLun: Int = 0
+        private set
+
     var initialized: Boolean = false
         private set
 
@@ -51,11 +63,13 @@ class MassStorageSession(
     private val maxTransferBytes: Int =
         (bulkIn.maxPacketSize * 16).coerceIn(512, 16 * 1024)
 
+    private val effectiveTimeout: Int = timeoutMs.coerceIn(1_000, 30_000)
+
     override val label: String = "USB UMS"
     override val size: Long get() = capacity?.totalBytes ?: 0L
     val blockSize: Int get() = capacity?.blockSize ?: 512
 
-    /** TEST UNIT READY, INQUIRY and READ CAPACITY; safe to call once after opening. */
+    /** INQUIRY, TEST UNIT READY and READ CAPACITY; safe to call once after opening. */
     fun initialize(): Result<Unit> {
         if (!claimed) {
             val claimedNow = runCatching { connection.claimInterface(usbInterface, true) }.getOrDefault(false)
@@ -65,46 +79,125 @@ class MassStorageSession(
             claimed = true
         }
 
-        var ready = execute(ScsiProtocol.testUnitReady(), 0, true)
-        if (!ready.success) {
-            val sense = requestSense()
-            logger(
-                "TEST UNIT READY: ${ready.error ?: "échec"} " +
-                    (sense?.let { "· sense: ${it.description}" } ?: ""),
+        maxLun = queryMaxLun()
+        logger(
+            "UMS: interface ${usbInterface.id}, max LUN $maxLun, " +
+                "Bulk IN 0x%02X / OUT 0x%02X, paquet %d o".format(
+                    bulkIn.address,
+                    bulkOut.address,
+                    bulkIn.maxPacketSize,
+                ),
+        )
+
+        // INQUIRY first: several UMS bridges ignore TEST UNIT READY until they
+        // have answered at least one INQUIRY.
+        var inquiryError = "aucune réponse"
+        for (attempt in 1..3) {
+            val outcome = execute(
+                cdb = ScsiProtocol.inquiry(36),
+                transferLength = 36,
+                directionIn = true,
+                label = "INQUIRY",
+                allowShortData = true,
             )
-            // Many bridges answer UNIT ATTENTION on the very first command.
-            ready = execute(ScsiProtocol.testUnitReady(), 0, true)
-            if (!ready.success) {
-                return Result.failure(
-                    IOException("Périphérique non prêt (${ready.error ?: "sans détail"})"),
-                )
+            if (outcome.success) {
+                val bytes = outcome.data.copyOf(minOf(outcome.received, outcome.data.size))
+                if (bytes.size < 36) {
+                    inquiryError = "réponse trop courte (${bytes.size} octets)"
+                } else {
+                    val parsed = ScsiProtocol.parseInquiry(bytes)
+                    if (parsed.isSuccess) {
+                        inquiry = parsed.getOrNull()
+                        logger("INQUIRY: ${inquiry?.displayName} rév. ${inquiry?.revision}")
+                        break
+                    }
+                    inquiryError = parsed.exceptionOrNull()?.message ?: "réponse illisible"
+                }
+            } else {
+                inquiryError = outcome.error ?: "échec inconnu"
+            }
+            logger("INQUIRY tentative $attempt : $inquiryError")
+            if (attempt < 3) {
+                resetRecovery()
+                sleepQuietly(300)
             }
         }
-
-        val inquiryOutcome = execute(ScsiProtocol.inquiry(96), 96, true)
-        if (!inquiryOutcome.success) {
-            return Result.failure(IOException("INQUIRY a échoué: ${inquiryOutcome.error}"))
-        }
-        inquiry = ScsiProtocol.parseInquiry(inquiryOutcome.data).getOrElse {
-            return Result.failure(IOException("Réponse INQUIRY illisible: ${it.message}"))
+        if (inquiry == null) {
+            return Result.failure(IOException("INQUIRY a échoué : $inquiryError"))
         }
 
-        val capacity10 = execute(ScsiProtocol.readCapacity10(), 8, true)
-        if (capacity10.success) {
-            ScsiProtocol.parseCapacity10(capacity10.data).onSuccess { capacity = it }
+        // A Hekate eMMC target can answer NOT READY for a short while after the
+        // USB link is established. Retry instead of declaring the device broken.
+        var readyError = "aucune réponse"
+        var ready = false
+        for (attempt in 1..8) {
+            val outcome = execute(
+                cdb = ScsiProtocol.testUnitReady(),
+                transferLength = 0,
+                directionIn = false,
+                label = "TEST UNIT READY",
+            )
+            if (outcome.success) {
+                ready = true
+                break
+            }
+            val sense = outcome.sense ?: requestSense()
+            readyError = buildString {
+                append(outcome.error ?: "échec")
+                if (sense != null) append(" · sense: ${sense.description}")
+            }
+            logger("TEST UNIT READY tentative $attempt : $readyError")
+            if (attempt < 8) sleepQuietly(350)
         }
-        if (capacity == null || capacity?.lastLba == 0xFFFFFFFFL) {
-            val capacity16 = execute(ScsiProtocol.readCapacity16(), 32, true)
-            if (capacity16.success) {
-                ScsiProtocol.parseCapacity16(capacity16.data).onSuccess { capacity = it }
+        if (!ready) {
+            return Result.failure(IOException("Périphérique non prêt : $readyError"))
+        }
+
+        var capacityError = "aucune réponse"
+        for (attempt in 1..3) {
+            val capacity10 = execute(
+                cdb = ScsiProtocol.readCapacity10(),
+                transferLength = 8,
+                directionIn = true,
+                label = "READ CAPACITY(10)",
+            )
+            if (capacity10.success) {
+                ScsiProtocol.parseCapacity10(capacity10.data.copyOf(capacity10.received))
+                    .onSuccess { capacity = it }
+                    .onFailure { capacityError = it.message ?: "réponse invalide" }
+            } else {
+                capacityError = capacity10.error ?: "échec"
+            }
+
+            if (capacity == null || capacity?.lastLba == 0xFFFFFFFFL) {
+                val capacity16 = execute(
+                    cdb = ScsiProtocol.readCapacity16(),
+                    transferLength = 32,
+                    directionIn = true,
+                    label = "READ CAPACITY(16)",
+                    allowShortData = true,
+                )
+                if (capacity16.success && capacity16.received >= 12) {
+                    ScsiProtocol.parseCapacity16(capacity16.data.copyOf(capacity16.received))
+                        .onSuccess { capacity = it }
+                        .onFailure { capacityError = it.message ?: "réponse invalide" }
+                } else if (capacity == null) {
+                    capacityError = capacity16.error ?: "réponse trop courte"
+                }
+            }
+
+            if (capacity != null) break
+            if (attempt < 3) {
+                resetRecovery()
+                sleepQuietly(400)
             }
         }
 
         val resolved = capacity
-            ?: return Result.failure(IOException("Capacité illisible (READ CAPACITY a échoué)"))
+            ?: return Result.failure(IOException("Capacité illisible : $capacityError"))
 
         if (resolved.blockSize != 512 && resolved.blockSize != 4096) {
-            logger("Taille de bloc inhabituelle: ${resolved.blockSize} octets")
+            logger("Taille de bloc inhabituelle : ${resolved.blockSize} octets")
         }
         initialized = true
         logger(
@@ -148,6 +241,7 @@ class MassStorageSession(
                 directionIn = true,
                 destination = buffer,
                 destinationOffset = (completed * block).toInt(),
+                label = if (cdb.size == 10) "READ(10)" else "READ(16)",
             )
             if (!outcome.success) {
                 throw IOException(
@@ -168,63 +262,112 @@ class MassStorageSession(
             cdb = if (lba + count <= 0xFFFFFFFFL) ScsiProtocol.read10(lba, count) else ScsiProtocol.read16(lba, count),
             transferLength = count * block,
             directionIn = true,
+            label = "READ direct",
         )
         if (!outcome.success) throw IOException("Lecture directe échouée: ${outcome.error}")
-        return outcome.data
+        return outcome.data.copyOf(outcome.received)
     }
 
     fun requestSense(): ScsiProtocol.Sense? {
-        val outcome = execute(ScsiProtocol.requestSense(18), 18, true)
-        if (!outcome.success) return null
-        return ScsiProtocol.parseSense(outcome.data)
+        val outcome = executeOnce(
+            cdb = ScsiProtocol.requestSense(18),
+            transferLength = 18,
+            directionIn = true,
+            label = "REQUEST SENSE",
+            allowShortData = true,
+        )
+        if (!outcome.success || outcome.received < 3) return null
+        return runCatching { ScsiProtocol.parseSense(outcome.data.copyOf(outcome.received)) }.getOrNull()
     }
 
+    /**
+     * Sends one command. Transport failures (missing/invalid CSW, bulk error) get
+     * one BOT reset + retry; SCSI CHECK CONDITION results are returned as-is so
+     * callers can decide whether to retry.
+     */
     private fun execute(
         cdb: ByteArray,
         transferLength: Int,
         directionIn: Boolean,
         destination: ByteArray? = null,
         destinationOffset: Int = 0,
+        label: String,
+        allowShortData: Boolean = false,
+    ): CommandOutcome {
+        val first = executeOnce(
+            cdb, transferLength, directionIn, destination, destinationOffset, label, allowShortData,
+        )
+        if (first.success) return first
+
+        val transportFailure =
+            first.csw == null ||
+                first.error?.contains("CSW") == true ||
+                first.error?.contains("CBW") == true ||
+                first.error?.contains("Transfert IN") == true
+        if (!transportFailure) return first
+
+        logger("$label : récupération BOT après « ${first.error} »")
+        resetRecovery()
+        val second = executeOnce(
+            cdb, transferLength, directionIn, destination, destinationOffset, label, allowShortData,
+        )
+        if (!second.success) logger("$label : échec après récupération — ${second.error}")
+        return second
+    }
+
+    private fun executeOnce(
+        cdb: ByteArray,
+        transferLength: Int,
+        directionIn: Boolean,
+        destination: ByteArray? = null,
+        destinationOffset: Int = 0,
+        label: String,
+        allowShortData: Boolean,
     ): CommandOutcome {
         val tag = nextTag++
-        val cbw = ScsiProtocol.buildCommandBlockWrapper(tag, transferLength, directionIn, lun, cdb)
-        val sent = connection.bulkTransfer(bulkOut, cbw, cbw.size, timeoutMs)
+        val dataIn = directionIn && transferLength > 0
+        val cbw = ScsiProtocol.buildCommandBlockWrapper(tag, transferLength, dataIn, lun, cdb)
+        val sent = runCatching { connection.bulkTransfer(bulkOut, cbw, cbw.size, effectiveTimeout) }
+            .getOrElse {
+                return CommandOutcome(false, ByteArray(0), 0, null, "$label : envoi CBW impossible (${it.message})")
+            }
         if (sent != cbw.size) {
-            recoverFromError()
             return CommandOutcome(
-                success = false,
-                data = ByteArray(0),
-                csw = null,
-                error = "Envoi du CBW incomplet ($sent/${cbw.size} octets)",
+                false, ByteArray(0), 0, null,
+                "$label : envoi CBW incomplet ($sent/${cbw.size} octets)",
             )
         }
 
         var data: ByteArray = ByteArray(0)
         var received = 0
-        if (transferLength > 0 && directionIn) {
+        if (dataIn) {
             data = destination ?: ByteArray(transferLength)
             val limit = minOf(transferLength, data.size - destinationOffset)
             while (received < limit) {
                 val chunk = minOf(maxTransferBytes, limit - received)
-                val read = connection.bulkTransfer(
-                    bulkIn,
-                    data,
-                    destinationOffset + received,
-                    chunk,
-                    timeoutMs,
-                )
-                if (read < 0) {
-                    recoverFromError()
+                val read = runCatching {
+                    connection.bulkTransfer(
+                        bulkIn,
+                        data,
+                        destinationOffset + received,
+                        chunk,
+                        effectiveTimeout,
+                    )
+                }.getOrElse {
                     return CommandOutcome(
-                        success = false,
-                        data = data,
-                        csw = null,
-                        error = "Transfert IN interrompu après $received octets (code $read)",
+                        false, data, received, null,
+                        "$label : transfert IN impossible (${it.message})",
+                    )
+                }
+                if (read < 0) {
+                    return CommandOutcome(
+                        false, data, received, null,
+                        "$label : transfert IN interrompu après $received octets (code $read)",
                     )
                 }
                 if (read == 0) {
                     consecutiveZeroReads++
-                    if (consecutiveZeroReads >= 2) break
+                    if (consecutiveZeroReads >= 3) break
                     continue
                 }
                 consecutiveZeroReads = 0
@@ -233,52 +376,57 @@ class MassStorageSession(
         }
 
         val cswBytes = readCsw()
-            ?: run {
-                recoverFromError()
-                return CommandOutcome(false, data, null, "CSW absent (périphérique déconnecté ?)")
-            }
+            ?: return CommandOutcome(false, data, received, null, "$label : CSW absent (déconnecté ?)")
         val csw = ScsiProtocol.parseCommandStatusWrapper(cswBytes, tag).getOrElse {
-            recoverFromError()
-            return CommandOutcome(false, data, null, it.message)
+            return CommandOutcome(false, data, received, null, "$label : ${it.message}")
         }
 
         if (csw.status != ScsiProtocol.STATUS_PASSED) {
             val sense = requestSense()
             return CommandOutcome(
-                success = false,
-                data = data,
-                csw = csw,
-                error = "CSW ${csw.statusText}, résidu ${csw.residue}",
-                sense = sense,
+                false, data, received, csw,
+                "$label : CSW ${csw.statusText}, résidu ${csw.residue}",
+                sense,
             )
         }
-        if (received < transferLength && transferLength > 0) {
-            val sense = requestSense()
-            return CommandOutcome(
-                success = false,
-                data = data,
-                csw = csw,
-                error = "Transfert incomplet ($received/$transferLength octets)",
-                sense = sense,
-            )
+
+        if (received < transferLength) {
+            if (!allowShortData) {
+                return CommandOutcome(
+                    false, data, received, csw,
+                    "$label : transfert incomplet ($received/$transferLength octets)",
+                )
+            }
+            if (received <= 0) {
+                return CommandOutcome(false, data, 0, csw, "$label : réponse vide")
+            }
+            data = data.copyOf(received)
         }
-        if (csw.residue != 0) {
-            return CommandOutcome(
-                success = false,
-                data = data,
-                csw = csw,
-                error = "Résidu CSW non nul (${csw.residue})",
-            )
+
+        if (csw.residue != 0 && received == transferLength) {
+            logger("$label : résidu CSW ${csw.residue} ignoré (données complètes reçues)")
         }
-        return CommandOutcome(true, data, csw, null)
+        logger(
+            "$label : OK · ${if (dataIn) "$received octets" else "sans données"} · " +
+                "CSW=${csw.statusText} résidu=${csw.residue}",
+        )
+        return CommandOutcome(true, data, received, csw, null)
     }
 
     private fun readCsw(): ByteArray? {
         val csw = ByteArray(13)
         var received = 0
         var attempts = 0
-        while (received < csw.size && attempts < 5) {
-            val read = connection.bulkTransfer(bulkIn, csw, received, csw.size - received, timeoutMs)
+        while (received < csw.size && attempts < 8) {
+            val read = runCatching {
+                connection.bulkTransfer(
+                    bulkIn,
+                    csw,
+                    received,
+                    csw.size - received,
+                    effectiveTimeout.coerceAtMost(4_000),
+                )
+            }.getOrDefault(-1)
             if (read <= 0) {
                 attempts++
                 continue
@@ -288,16 +436,31 @@ class MassStorageSession(
         return if (received == csw.size) csw else null
     }
 
-    /** CLEAR_FEATURE(ENDPOINT_HALT) on both bulk endpoints, then drain a stale CSW. */
-    private fun recoverFromError() {
+    /** Bulk-Only Mass Storage Reset + CLEAR_FEATURE(ENDPOINT_HALT). */
+    private fun resetRecovery() {
+        runCatching {
+            connection.controlTransfer(0x21, 0xFF, 0, usbInterface.id, null, 0, 2_000)
+        }
         runCatching {
             connection.controlTransfer(0x02, 0x01, 0, bulkIn.address, null, 0, 1_000)
             connection.controlTransfer(0x02, 0x01, 0, bulkOut.address, null, 0, 1_000)
         }
         runCatching {
-            val scratch = ByteArray(13)
-            connection.bulkTransfer(bulkIn, scratch, scratch.size, 100)
+            val scratch = ByteArray(64)
+            connection.bulkTransfer(bulkIn, scratch, scratch.size, 150)
         }
+    }
+
+    private fun queryMaxLun(): Int {
+        val buffer = ByteArray(1)
+        val read = runCatching {
+            connection.controlTransfer(0xA1, 0xFE, 0, usbInterface.id, buffer, 1, 1_500)
+        }.getOrDefault(-1)
+        return if (read >= 1) buffer[0].toInt() and 0xFF else 0
+    }
+
+    private fun sleepQuietly(milliseconds: Long) {
+        runCatching { Thread.sleep(milliseconds) }
     }
 
     override fun close() {

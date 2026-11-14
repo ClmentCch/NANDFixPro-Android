@@ -199,7 +199,7 @@ class UsbRepository(
             usbInterface = usbInterface.usbInterface,
             bulkIn = inEndpoint.usbEndpoint,
             bulkOut = outEndpoint.usbEndpoint,
-            timeoutMs = timeoutMs,
+            timeoutMs = timeoutMs.coerceAtLeast(10_000),
             logger = logger,
         )
 
@@ -209,15 +209,17 @@ class UsbRepository(
                 "interface ${usbInterface.usbInterface.id}",
         )
 
-        val init = session.initialize()
+        val init = runCatching { session.initialize() }.getOrElse { Result.failure(it) }
         if (init.isFailure) {
             val error = init.exceptionOrNull()
             val assessment = HekateAssessment(
                 verdict = CompatibilityVerdict.INCOMPATIBLE,
                 headline = "Communication SCSI impossible",
                 reasons = listOfNotNull(
-                    error?.message,
-                    "Vérifiez que Hekate est en mode USB Tools et que le câble OTG est de bonne qualité.",
+                    error?.message ?: "Échec SCSI sans message",
+                    "Étape échouée : ${error?.message?.substringBefore(':') ?: "initialisation"}",
+                    "Vérifiez que Hekate affiche « Started USB » pour eMMC RAW GPP, puis réessayez.",
+                    "Un câble OTG de mauvaise qualité ou une alimentation insuffisante peut couper la session.",
                 ),
                 inquiry = session.inquiry,
                 capacity = session.capacity,

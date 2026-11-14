@@ -3,6 +3,9 @@ package com.nandfixpro.android.data
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
+import android.os.storage.StorageManager
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import com.nandfixpro.android.nand.ChannelSource
@@ -45,6 +48,14 @@ class StorageRepository(private val context: Context) {
             runCatching(cleanup)
         }
     }
+
+    data class VolumeInfo(
+        val id: String,
+        val label: String,
+        val isRemovable: Boolean,
+        val isPrimary: Boolean,
+        val treeUri: Uri?,
+    )
 
     data class SafEntry(
         val uri: Uri,
@@ -125,6 +136,54 @@ class StorageRepository(private val context: Context) {
 
     fun openLocalFile(file: File): Result<SourceHandle> = runCatching {
         SourceHandle(FileSource(file), file.name, Uri.fromFile(file))
+    }
+
+    /** Volumes mounted by Android and exposed by DocumentsUI, including removable SD/USB. */
+    fun storageVolumes(): List<VolumeInfo> {
+        val manager = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
+            ?: return emptyList()
+        return runCatching {
+            manager.storageVolumes.mapNotNull { volume ->
+                if (volume.state != Environment.MEDIA_MOUNTED) return@mapNotNull null
+                val primary = volume.isPrimary
+                val uuid = volume.uuid
+                if (!primary && uuid.isNullOrBlank()) return@mapNotNull null
+                val documentId = if (primary) "primary:" else "$uuid:"
+                val treeUri = runCatching {
+                    DocumentsContract.buildTreeDocumentUri(
+                        "com.android.externalstorage.documents",
+                        documentId,
+                    )
+                }.getOrNull()
+                VolumeInfo(
+                    id = if (primary) "primary" else uuid!!,
+                    label = runCatching { volume.getDescription(context) }
+                        .getOrDefault(if (primary) "Stockage interne" else "Carte SD / USB"),
+                    isRemovable = volume.isRemovable,
+                    isPrimary = primary,
+                    treeUri = treeUri,
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** Reads a small text document (prod.keys, manifests) with a hard size limit. */
+    fun readText(uri: Uri, maxBytes: Int = 256 * 1024): Result<String> = runCatching {
+        val input = context.contentResolver.openInputStream(uri)
+            ?: throw IOException("Ouverture du fichier impossible")
+        input.use { stream ->
+            val buffer = ByteArray(maxBytes + 1)
+            var total = 0
+            while (total < buffer.size) {
+                val read = stream.read(buffer, total, buffer.size - total)
+                if (read <= 0) break
+                total += read
+            }
+            if (total > maxBytes) {
+                throw IOException("Fichier trop volumineux (limite ${maxBytes / 1024} Kio)")
+            }
+            String(buffer, 0, total, Charsets.UTF_8)
+        }
     }
 
     fun takePersistablePermission(uri: Uri) {

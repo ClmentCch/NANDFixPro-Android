@@ -1,6 +1,6 @@
 # NAND Fix Pro Android
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/ClmentCch/NANDFixPro-Android/releases/tag/v1.0.0)
+[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/ClmentCch/NANDFixPro-Android/releases/tag/v1.0.1)
 [![Platform](https://img.shields.io/badge/platform-Android%2013%2B%20(ARM64)-3DDC84.svg)](https://www.android.com/)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.0-7F52FF.svg)](https://kotlinlang.org/)
 [![Compose](https://img.shields.io/badge/Jetpack-Compose-4285F4.svg)](https://developer.android.com/jetpack/compose)
@@ -44,13 +44,13 @@ pouvait pas l'être dans l'environnement de développement.
 | --- | --- |
 | Compilation Gradle (AGP 8.7.3, Kotlin 2.0.21, JDK 17) | ✅ `BUILD SUCCESSFUL` |
 | Tests unitaires JVM (`./gradlew testDebugUnitTest`) | ✅ **43 tests, 0 échec** |
-| APK release minifié (R8) généré | ✅ `app-release.apk` — 2,76 Mo |
+| APK release minifié (R8) généré | ✅ `app-release.apk` — 2,78 Mo |
 | APK installable (signé, manifeste valide, ARM64 inclus) | ✅ vérifié avec `apksigner` et `aapt2` |
 | Auto-test des moteurs embarqué (écran Diagnostics) | ✅ 8 contrôles sur des structures synthétiques |
 | Connexion réelle à une Switch via Hekate | ❌ **non testée — aucun matériel disponible** |
 | Lecture USB réelle d'un périphérique UMS | ❌ **non testée — aucun matériel disponible** |
 | Exécution de l'interface sur un téléphone physique | ❌ **non testée — pas d'appareil ni d'émulateur dans l'environnement** |
-| Validation Android 16 / 17 | ❌ non disponible au moment de la v1.0.0 (compilation et cible API 35, minSdk 33) |
+| Validation Android 16 / 17 | ❌ non disponible au moment de la v1.0.1 (compilation et cible API 35, minSdk 33) |
 
 L'APK de la release est **auto-signé avec la clé de debug Android** (`CN=Android Debug`,
 SHA-256 `f514503594c8b9b3d4ed2fcbd86aec2aa73739122b622163876fb7fa696ac659`). Il s'installe par
@@ -190,16 +190,16 @@ l'application le dit explicitement et propose de copier le fichier dans le stock
 
 ## Installation de l'APK
 
-L'APK signé est joint à la release **v1.0.0** :
+L'APK signé est joint à la release **v1.0.1** :
 
 ```
-NANDFixPro-Android-1.0.0.apk
+NANDFixPro-Android-1.0.1.apk
 ```
 
 Installation :
 
 ```bash
-adb install -r NANDFixPro-Android-1.0.0.apk
+adb install -r NANDFixPro-Android-1.0.1.apk
 ```
 
 ou copier l'APK sur le téléphone et l'ouvrir (autoriser l'installation depuis cette source).
@@ -261,7 +261,7 @@ ou utilisez les variables d'environnement `NANDFIX_STORE_FILE`, `NANDFIX_STORE_P
 | Compose BOM | 2024.10.01 |
 | ABI | universel (arm64-v8a, armeabi-v7a, x86, x86_64) |
 
-Android 17 n'étant pas publié à la date de la v1.0.0, la compatibilité future repose sur `minSdk 33`
+Android 17 n'étant pas publié à la date de la v1.0.1, la compatibilité future repose sur `minSdk 33`
 et l'absence d'API supprimée. Aucune validation sur Android 16/17 n'a pu être effectuée.
 
 ---
@@ -395,7 +395,7 @@ sans console ni dump réel.
 | Génération de `BOOT0`/`BOOT1` (EmmcHaccGen) | **Impossible tel quel** | `EmmcHaccGen.exe` est un binaire .NET x64; Android ARM64 ne peut pas l'exécuter sans réimplémentation complète du chiffrement |
 | Montage / modification de partitions (NxNandManager) | **Impossible tel quel** | Binaire natif x64 + pilote Dokan (Windows) |
 | Montage de disques virtuels (OSFMount) | **Impossible** | Pilote de disque virtuel Windows uniquement |
-| Navigation FAT de la carte SD en UMS | **Non inclus en v1.0.0** | Android n'expose pas de pilote UMS/FAT; un lecteur FAT32 read-only serait nécessaire |
+| Navigation FAT de la carte SD en UMS | **Non inclus en v1.0.1** | Android n'expose pas de pilote UMS/FAT; un lecteur FAT32 read-only serait nécessaire |
 | Version de firmware | **Non déduite** | Nécessite le parsing des NCA et le déchiffrement des titres |
 | Téléchargement de firmware | **Non inclus** | Hôte de fichiers et questions légales hors périmètre |
 | Déchiffrement PRODINFO | **Non inclus** | Nécessite les clés propres à la console (`prod.keys`); seule l'analyse CAL0 déchiffré est proposée |

@@ -1,5 +1,40 @@
 # Changelog — NAND Fix Pro Android
 
+## 1.0.1 — 2026-11-14
+
+### USB / Hekate
+
+- Corrige l'échec « Communication SCSI impossible » avec Hekate : la réponse INQUIRY
+de 36 octets (pour une allocation de 96) était rejetée à cause du résidu CSW non nul.
+- INQUIRY est maintenant envoyé avant TEST UNIT READY, comme l'exige la cible Hekate
+(condition UNIT ATTENTION au démarrage).
+- INQUIRY et READ CAPACITY(16) acceptent les réponses courtes légales ; une lecture READ
+courte reste refusée pour ne jamais produire une sauvegarde tronquée.
+- Ajout de la récupération Bulk-Only Reset + CLEAR_FEATURE avec une nouvelle tentative,
+puis 8 tentatives TEST UNIT READY (média pas encore prêt).
+- Délai SCSI par défaut porté à 10 s, GET MAX LUN interrogé et journalisé.
+- L'écran USB affiche désormais l'étape et l'erreur SCSI exactes, avec un bouton
+« Réessayer la connexion ».
+- La détection Hekate attend 900 ms après l'attachement avant d'interroger la cible.
+- Correction du libellé « Détecter Hekate » tronqué dans les boutons secondaires.
+
+### Dossiers et firmware
+
+- Sélecteur d'emplacement : volumes montés (stockage interne, carte SD, USB) avec
+URI initiale, en plus du sélecteur Android.
+- Explication explicite de l'interdiction Android de choisir la racine du stockage
+interne, et de l'impossibilité de monter une cible UMS Hekate.
+- Nouvelle étape prod.keys : sélection du fichier depuis la carte SD/le téléphone,
+validation structurelle locale, affichage du nombre de clés et des générations de
+master keys sans jamais révéler une valeur.
+- Parcours firmware en trois étapes clairement séparées ; aucun déchiffrement NCA et
+aucune installation de firmware ne sont simulés.
+
+### Vérifications
+
+- 43 tests unitaires JVM.
+- Compilation release et APK vérifiés.
+
 ## 1.0.0 — 2026-11-14
 
 Première version Android de NAND Fix Pro.

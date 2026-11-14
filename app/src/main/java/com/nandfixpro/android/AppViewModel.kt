@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nandfixpro.android.data.AppSettings
 import com.nandfixpro.android.data.StorageRepository.BackupArtifact
+import com.nandfixpro.android.data.StorageRepository.VolumeInfo
 import com.nandfixpro.android.data.LogRepository
 import com.nandfixpro.android.data.NotificationHelper
 import com.nandfixpro.android.data.SettingsRepository
@@ -19,12 +20,15 @@ import com.nandfixpro.android.nand.NandCapacity
 import com.nandfixpro.android.nand.NandFileDetector
 import com.nandfixpro.android.nand.NandFileKind
 import com.nandfixpro.android.nand.NandSize
+import com.nandfixpro.android.nand.ProdKeysParser
+import com.nandfixpro.android.nand.ProdKeysSummary
 import com.nandfixpro.android.nand.ProdinfoEngine
 import com.nandfixpro.android.usb.CompatibilityVerdict
 import com.nandfixpro.android.usb.HekateAssessment
 import com.nandfixpro.android.usb.UsbOpenResult
 import com.nandfixpro.android.usb.UsbRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -94,6 +98,12 @@ sealed interface FirmwareState {
     data class Failed(val message: String) : FirmwareState
 }
 
+sealed interface ProdKeysState {
+    data object Empty : ProdKeysState
+    data class Loaded(val summary: ProdKeysSummary) : ProdKeysState
+    data class Failed(val message: String) : ProdKeysState
+}
+
 data class DeviceInfo(
     val model: String,
     val manufacturer: String,
@@ -155,7 +165,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _selfTest = MutableStateFlow<SelfTestReport?>(null)
     val selfTest: StateFlow<SelfTestReport?> = _selfTest.asStateFlow()
 
+    private val _prodKeys = MutableStateFlow<ProdKeysState>(ProdKeysState.Empty)
+    val prodKeys: StateFlow<ProdKeysState> = _prodKeys.asStateFlow()
+
     private var prodinfoEngine: ProdinfoEngine? = null
+    private var lastUsbDeviceId: Int? = null
     private var cancelRequested = false
 
     init {
@@ -202,12 +216,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (autoProbe) {
             val candidate = found.firstOrNull { it.isMassStorage } ?: found.firstOrNull()
             if (candidate != null) {
-                connectDevice(candidate.deviceId)
+                // Hekate needs a moment after "Started USB" before its SCSI target answers.
+                viewModelScope.launch {
+                    delay(900)
+                    if (usbRepository.devices.value.any { it.deviceId == candidate.deviceId }) {
+                        connectDevice(candidate.deviceId)
+                    }
+                }
             }
         }
     }
 
     fun connectDevice(deviceId: Int) {
+        lastUsbDeviceId = deviceId
         val device = devices.value.firstOrNull { it.deviceId == deviceId }
         if (device == null) {
             message("Périphérique USB introuvable, actualisez la liste.")
@@ -249,6 +270,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 logRepository.error("Probe", "Échec : ${error.message}")
             }
         }
+    }
+
+    fun retryUsb() {
+        val id = lastUsbDeviceId
+        if (id != null) connectDevice(id) else detectUsb()
     }
 
     fun disconnectUsb() {
@@ -650,6 +676,43 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun storageFreeSpace(): Long = storageRepository.usableSpace()
 
     // ------------------------------------------------------------- firmware
+
+    fun loadProdKeys(uri: Uri) {
+        _prodKeys.value = ProdKeysState.Empty
+        launchOperation("Lecture de prod.keys") { _, _ ->
+            storageRepository.takePersistablePermission(uri)
+            val text = storageRepository.readText(uri).getOrNull()
+                ?: return@launchOperation OperationResult(
+                    false,
+                    "prod.keys illisible",
+                    "Fichier inaccessible ou supérieur à 256 Kio. Choisissez un fichier prod.keys texte.",
+                )
+            val name = uri.lastPathSegment?.substringAfterLast('/') ?: "prod.keys"
+            val summary = ProdKeysParser.parse(text, name)
+            if (summary.validKeys == 0) {
+                _prodKeys.value = ProdKeysState.Failed("Aucune clé valide détectée")
+                return@launchOperation OperationResult(
+                    false,
+                    "prod.keys invalide",
+                    "Aucune entrée valide au format name=hexadécimal.",
+                )
+            }
+            _prodKeys.value = ProdKeysState.Loaded(summary)
+            logRepository.info(
+                "prod.keys",
+                "$name · ${summary.validKeys} clés valides · " +
+                    "master ${summary.newestMasterKey ?: "non détectée"}",
+            )
+            OperationResult(
+                true,
+                "prod.keys validé",
+                "${summary.validKeys} clés valides · ${summary.masterKeys.size} master key(s) · " +
+                    "valeurs jamais affichées",
+            )
+        }
+    }
+
+    fun storageVolumes(): List<VolumeInfo> = storageRepository.storageVolumes()
 
     fun scanFirmware(treeUri: Uri) {
         _firmwareState.value = FirmwareState.Empty

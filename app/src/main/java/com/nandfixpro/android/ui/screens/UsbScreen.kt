@@ -112,7 +112,9 @@ fun UsbScreen(viewModel: AppViewModel) {
             ConnectionStateCard(
                 state = usbState,
                 lastActivity = lastActivity,
+                assessment = assessment,
                 onDisconnect = viewModel::disconnectUsb,
+                onRetry = viewModel::retryUsb,
             )
 
             NandCard(title = "Périphériques USB détectés", icon = Icons.Filled.Usb) {
@@ -158,7 +160,9 @@ fun UsbScreen(viewModel: AppViewModel) {
 private fun ConnectionStateCard(
     state: UsbUiState,
     lastActivity: Long?,
+    assessment: com.nandfixpro.android.usb.HekateAssessment?,
     onDisconnect: () -> Unit,
+    onRetry: () -> Unit,
 ) {
     val (label, color) = when (state) {
         is UsbUiState.Idle -> "Déconnecté" to NandTextFaint
@@ -212,12 +216,27 @@ private fun ConnectionStateCard(
                     Text("  Fermer la connexion")
                 }
             }
-            is UsbUiState.Failed ->
+            is UsbUiState.Failed -> {
                 Text(
                     state.message,
                     style = MaterialTheme.typography.bodyMedium,
                     color = NandRed,
                 )
+                assessment?.reasons?.take(6)?.forEach { reason ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("•", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            reason,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                TextButton(onClick = onRetry) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.height(16.dp))
+                    Text("  Réessayer la connexion")
+                }
+            }
             else -> Unit
         }
     }

@@ -12,7 +12,7 @@ private val Context.settingsDataStore by preferencesDataStore(name = "nandfix_se
 
 data class AppSettings(
     val notificationsEnabled: Boolean = true,
-    val usbTimeoutMs: Int = 5_000,
+    val usbTimeoutMs: Int = 10_000,
     val verboseLogs: Boolean = false,
     val autoHash: Boolean = true,
     val requireConfirmation: Boolean = true,
@@ -26,7 +26,7 @@ class SettingsRepository(private val context: Context) {
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { preferences ->
         AppSettings(
             notificationsEnabled = preferences[KEY_NOTIFICATIONS] ?: true,
-            usbTimeoutMs = preferences[KEY_USB_TIMEOUT] ?: 5_000,
+            usbTimeoutMs = preferences[KEY_USB_TIMEOUT] ?: 10_000,
             verboseLogs = preferences[KEY_VERBOSE] ?: false,
             autoHash = preferences[KEY_AUTO_HASH] ?: true,
             requireConfirmation = preferences[KEY_CONFIRM] ?: true,
@@ -54,7 +54,7 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun resetPolicyDefaults() = context.settingsDataStore.edit { preferences ->
         preferences[KEY_NOTIFICATIONS] = true
-        preferences[KEY_USB_TIMEOUT] = 5_000
+        preferences[KEY_USB_TIMEOUT] = 10_000
         preferences[KEY_VERBOSE] = false
         preferences[KEY_AUTO_HASH] = true
         preferences[KEY_CONFIRM] = true
