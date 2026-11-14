@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Nintendo Co., Ltd. (0x057E) -->
+    <usb-device vendor-id="1406" />
+    <!-- USB Mass Storage Class, SCSI transparent command set (Bulk-Only) -->
+    <usb-device class="8" subclass="6" protocol="80" />
+</resources>

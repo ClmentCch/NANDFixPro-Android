@@ -37,3 +37,20 @@ installation.ini
 
 
 
+
+# --- Android / Gradle ---
+.gradle/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+keystore.properties
+*.jks
+*.keystore
+
+# Keep the Gradle wrapper jar (required to build without a local Gradle install)
+!gradle/wrapper/gradle-wrapper.jar
