@@ -38,7 +38,7 @@ Première version Android de NAND Fix Pro.
 - Lecture seule garantie sur tout support physique.
 - Gestion des déconnexions USB et annulation sécurisée des opérations.
 - Auto-test des moteurs embarqué (8 contrôles).
-- 42 tests unitaires JVM.
+- 43 tests unitaires JVM.
 
 ### Limites documentées
 

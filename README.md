@@ -43,7 +43,7 @@ pouvait pas l'être dans l'environnement de développement.
 | Élément | Statut |
 | --- | --- |
 | Compilation Gradle (AGP 8.7.3, Kotlin 2.0.21, JDK 17) | ✅ `BUILD SUCCESSFUL` |
-| Tests unitaires JVM (`./gradlew testDebugUnitTest`) | ✅ **42 tests, 0 échec** |
+| Tests unitaires JVM (`./gradlew testDebugUnitTest`) | ✅ **43 tests, 0 échec** |
 | APK release minifié (R8) généré | ✅ `app-release.apk` — 2,76 Mo |
 | APK installable (signé, manifeste valide, ARM64 inclus) | ✅ vérifié avec `apksigner` et `aapt2` |
 | Auto-test des moteurs embarqué (écran Diagnostics) | ✅ 8 contrôles sur des structures synthétiques |
@@ -226,7 +226,7 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 
 ```bash
 ./gradlew :app:assembleDebug      # APK de développement
-./gradlew :app:testDebugUnitTest  # 42 tests unitaires JVM
+./gradlew :app:testDebugUnitTest  # 43 tests unitaires JVM
 ./gradlew :app:assembleRelease    # APK release minifié (R8)
 
 # Sorties :
@@ -340,7 +340,7 @@ méthode `write` dans les couches `nand`, `usb` ou `storage` appliquée à un su
 ./gradlew :app:testDebugUnitTest
 ```
 
-42 tests couvrent :
+43 tests couvrent :
 
 - parsing GPT (signature, CRC, entrées, GPT de secours, GUID, image tronquée) ;
 - moteur PRODINFO (chargement CAL0, CRC16, SHA-256, édition + recalcul, refus des fichiers

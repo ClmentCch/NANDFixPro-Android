@@ -401,19 +401,28 @@ private fun HekateSection(
             }
 
             NandDivider()
-            SecondaryAction(
-                text = "Tester la lecture (4 Mio, lecture seule)",
-                icon = Icons.Filled.PlayArrow,
-                onClick = onReadTest,
-            )
-            if (assessment.verdict == CompatibilityVerdict.HEKATE_BOOT) {
+            if (state is UsbUiState.Connected) {
                 SecondaryAction(
-                    text = "Sauvegarder cette partition BOOT",
-                    icon = Icons.Filled.Save,
-                    onClick = onSaveBoot,
+                    text = "Tester la lecture (4 Mio, lecture seule)",
+                    icon = Icons.Filled.PlayArrow,
+                    onClick = onReadTest,
+                )
+                if (assessment.verdict == CompatibilityVerdict.HEKATE_BOOT) {
+                    SecondaryAction(
+                        text = "Sauvegarder cette partition BOOT",
+                        icon = Icons.Filled.Save,
+                        onClick = onSaveBoot,
+                    )
+                }
+                TextButton(onClick = onDisconnect) { Text("Fermer la connexion USB") }
+            } else {
+                Text(
+                    "Session SCSI non établie : aucune lecture n'est possible tant que la communication " +
+                        "n'aboutit pas. Vérifiez le mode choisi dans Hekate et le câble OTG.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = NandAmber,
                 )
             }
-            TextButton(onClick = onDisconnect) { Text("Fermer la connexion USB") }
         }
     }
 }

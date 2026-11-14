@@ -227,7 +227,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             logRepository.usb("Probe", "Ouverture de l'interface UMS de ${device.displayName}")
             val opened = usbRepository.openMassStorage(deviceId, settings.value.usbTimeoutMs)
             opened.onSuccess { result ->
-                _usbState.value = UsbUiState.Connected(result)
+                // A null session means SCSI initialisation failed: the link is open but the
+                // target is not usable. Never report that as a live connection.
+                _usbState.value = if (result.session == null) {
+                    UsbUiState.Failed(result.assessment.headline, device.displayName)
+                } else {
+                    UsbUiState.Connected(result)
+                }
                 logRepository.usb(
                     "Compatibilité",
                     "${result.assessment.verdict.label} · ${result.assessment.capacityLabel}",

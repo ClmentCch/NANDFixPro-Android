@@ -101,6 +101,33 @@ class NandAnalysisTest {
     }
 
     @Test
+    fun `assembled split set is analysed against its gpt`() {
+        val image = SyntheticFixtures.gptImage()
+        val half = image.size / 2
+        val partA = image.copyOfRange(0, half)
+        val partB = image.copyOfRange(half, image.size)
+        val assembled = MultiSource(
+            listOf(ByteArraySource(partA, "rawnand.bin.00"), ByteArraySource(partB, "rawnand.bin.01")),
+            "2 parties",
+        )
+        val refs = listOf(
+            SplitNandDetector.FileRef("rawnand.bin.00", partA.size.toLong()),
+            SplitNandDetector.FileRef("rawnand.bin.01", partB.size.toLong()),
+            SplitNandDetector.FileRef("BOOT0", 4L * 1024 * 1024),
+            SplitNandDetector.FileRef("BOOT1", 4L * 1024 * 1024),
+        )
+        val set = (SplitNandDetector.detect("rawnand.bin.00", refs) as SplitNandDetector.Result.Success).set
+
+        val analysis = NandAnalyzer.analyze(assembled, "2 parties", set)
+
+        assertEquals(2, analysis.split!!.partNames.size)
+        assertNotNull(analysis.gpt)
+        assertEquals(8, analysis.partitions.size)
+        assertTrue(analysis.issues.any { it.title == "Jeu découpé complet" })
+        assertTrue(analysis.issues.none { it.title == "Jeu découpé incohérent" })
+    }
+
+    @Test
     fun `split source reads across part boundaries`() {
         val partA = ByteArray(1024) { 0x0A }
         val partB = ByteArray(2048) { 0x0B }
